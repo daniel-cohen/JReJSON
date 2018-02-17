@@ -29,7 +29,11 @@
 package com.redislabs.modules.rejson;
 
 import com.google.gson.Gson;
+
+import redis.clients.jedis.Client;
 import redis.clients.jedis.Jedis;
+import redis.clients.jedis.Protocol;
+import redis.clients.jedis.Transaction;
 import redis.clients.jedis.commands.ProtocolCommand;
 import redis.clients.util.SafeEncoder;
 
@@ -95,6 +99,16 @@ public class JReJSON {
         if (!str.equals("OK"))
             throw new RuntimeException(str);
     }
+    
+    /**
+     * Helper to check for an QUEUED reply
+     * @param str the reply string to "scrutinize"
+     */
+    private static void assertReplyQUEUED(final String str) {
+        if (!str.equals("QUEUED"))
+            throw new RuntimeException(str);
+    }
+    
 
     /**
      * Helper to handle single optional path argument situations
@@ -128,9 +142,11 @@ public class JReJSON {
         args.add(SafeEncoder.encode(key));
         args.add(SafeEncoder.encode(getSingleOptionalPath(path).toString()));
 
-        Long rep = conn.getClient()
-                    .sendCommand(Command.DEL, args.toArray(new byte[args.size()][]))
-                    .getIntegerReply();
+        //TODO:DJC
+        Client client = conn.getClient(); 
+        client.sendCommand(Command.DEL, args.toArray(new byte[args.size()][]));
+        Long rep =  client.getIntegerReply();
+        
         conn.close();
 
         return rep;
@@ -152,15 +168,119 @@ public class JReJSON {
             args.add(SafeEncoder.encode(p.toString()));
         }
 
-        String rep = conn.getClient()
-                .sendCommand(Command.GET, args.toArray(new byte[args.size()][]))
-                .getBulkReply();
-        conn.close();
+        
+        //TODO: DJC
+        Client client = conn.getClient();
+        
+        client.sendCommand(Command.GET, args.toArray(new byte[args.size()][]));
+        String rep = client.getBulkReply();
+        
+        //conn.close();
 
         assertReplyNotError(rep);
         return gson.fromJson(rep, Object.class);
     }
 
+    
+    /**
+     * Sets an object (with expiry)
+     * @param conn the Jedis connection
+     * @param key the key name
+     * @param object the Java object to store
+     * @param flag an existential modifier
+     * @param expirySeconds the key will timeout after a given number of seconds
+     * @param path optional single path in the object, defaults to root
+
+     */
+    public static void set(Jedis conn, String key, Object object, ExistenceModifier flag, int expirySeconds,  Path... path) {
+        List<byte[]> args = new ArrayList(4);
+
+        args.add(SafeEncoder.encode(key));
+        args.add(SafeEncoder.encode(getSingleOptionalPath(path).toString()));
+        args.add(SafeEncoder.encode(gson.toJson(object)));
+        if (ExistenceModifier.DEFAULT != flag) {
+            args.add(flag.getRaw());
+        }
+
+        //TODO: DJC
+//        if (expirySeconds > 0) {
+//          args.add(SafeEncoder.encode("EX"));
+//          args.add(SafeEncoder.encode(String.valueOf(expirySeconds)));
+//        }
+        Client client = conn.getClient();
+
+        
+        //client.sendCommand(Protocol.Command.MULTI);
+        String stat; 
+        client.multi();
+        stat = client.getStatusCodeReply();
+        assertReplyOK(stat);
+        
+        client.sendCommand(Command.SET, args.toArray(new byte[args.size()][]));
+        stat = client.getStatusCodeReply();
+        assertReplyQUEUED(stat);
+        
+        
+        //client.sendCommand(Protocol.Command.EXPIRE, SafeEncoder.encode(key), SafeEncoder.encode(String.valueOf(expirySeconds)));
+        client.expire(key, expirySeconds);
+        stat = client.getStatusCodeReply();
+        assertReplyQUEUED(stat);
+        
+       
+        //client.sendCommand(Protocol.Command.EXEC);
+        client.exec();
+        
+        //stat = client.getStatusCodeReply();
+        //assertReplyQUEUED(stat);
+        
+        List<Object> responseList = client.getObjectMultiBulkReply();
+        //Check results:
+        if (responseList.size() != 2) {
+          throw new RuntimeException("An error occurred while setting with expiry.");
+        }
+        
+        Object o1 = responseList.get(0);
+        
+        if (!o1.getClass().isArray() ||
+            !(o1  instanceof byte[] ) ||
+            !SafeEncoder.encode((byte[])o1).equals("OK"))
+        {
+          throw new RuntimeException("SET COMMAND FAILED.");
+        }
+        
+        //assertReplyOK((String)));
+
+        // check the expire was successful:
+        if ((Long)responseList.get(1) != 1) {
+          throw new RuntimeException("EXPIRE COMMAND FAILED.");
+        }
+          
+
+
+        
+        
+        
+        
+        
+        
+        
+        
+        ///client.sendCommand(Protocol.Command.EXPIRE, String.valueOf(expirySeconds));
+        //status =  client.getStatusCodeReply();
+        
+        
+        //removed this close so I can use the pool:
+        //  see: https://github.com/RedisLabs/JReJSON/issues/4
+        //conn.close();
+
+        
+        //TODO: figure out what the respose is for exec:
+        
+        //String status =  client.getStatusCodeReply();
+        //assertReplyOK(status);
+    }
+    
+    
     /**
      * Sets an object
      * @param conn the Jedis connection
@@ -180,9 +300,11 @@ public class JReJSON {
             args.add(flag.getRaw());
         }
 
-        String status = conn.getClient()
-                .sendCommand(Command.SET, args.toArray(new byte[args.size()][]))
-                .getStatusCodeReply();
+        //TODO: DJC
+        Client client = conn.getClient();
+        client.sendCommand(Command.SET, args.toArray(new byte[args.size()][]));
+        String status =  client.getStatusCodeReply();
+        
         conn.close();
 
         assertReplyOK(status);
@@ -213,9 +335,11 @@ public class JReJSON {
         args.add(SafeEncoder.encode(key));
         args.add(SafeEncoder.encode(getSingleOptionalPath(path).toString()));
 
-        String rep = conn.getClient()
-                .sendCommand(Command.TYPE, args.toArray(new byte[args.size()][]))
-                .getBulkReply();
+        //TODO:DJC
+        Client client = conn.getClient(); 
+        client.sendCommand(Command.TYPE, args.toArray(new byte[args.size()][]));
+        String rep = client.getBulkReply();
+        
         conn.close();
 
         assertReplyNotError(rep);
